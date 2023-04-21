@@ -9,7 +9,7 @@ import socket
 import time
 import numpy as np
 
-NUM_MACHINES = 3
+NUM_MACHINES = 8
 
 ADDR_1 = "localhost"
 ADDR_2 = "localhost"
@@ -28,6 +28,22 @@ CPORT_3 = 8082
 ADDRS = [ADDR_1, ADDR_2, ADDR_3]
 PORTS = [PORT_1, PORT_2, PORT_3]
 CPORTS = [CPORT_1, CPORT_2, CPORT_3]
+
+
+MATFILE1 = ""
+MATFILE2 = ""
+
+matrix1 = np.loadtxt(MATFILE1)
+matrix2 = np.loadtxt(MATFILE2)
+matshape = matrix1.shape
+
+DIMENSION = matshape[0]
+
+product = np.zeros(matshape)
+
+# Product lock
+prod_lock = Lock()
+
 
 # Machine number
 machine_idx = str(sys.argv[1])
@@ -51,7 +67,9 @@ replica_dictionary = {"1": (ADDR_1, PORT_1), "2": (
 reverse_rep_dict = {(ADDR_1, PORT_1): "1", (ADDR_2, PORT_2): "2", (ADDR_3, PORT_3): "3"}
 
 # replica connections, that are established, changed to the connection once connected
-replica_connections = {"1": 0, "2": 0, "3": 0}
+replica_connections = {}
+for i in range(1, NUM_MACHINES+1):
+    replica_connections[str(i)] = 0
 
 # lock on replica_connections, because incoming servers could affect accessing during leader election
 replica_lock = Lock()
@@ -61,6 +79,23 @@ is_Primary = False
 
 # lock for the message queue
 dict_lock = Lock()
+
+
+# Machine Availability Dictionary
+availability = {}
+for i in range(1, NUM_MACHINES+1):
+    availability[str(i)] = 0
+
+
+# Checks to see what subtasks are remaining
+subtask_queue = []
+for i in range(1, 8):
+    subtask_queue.append(str(i))
+
+# locks for changes to subtask_queue and availability dict
+avail_lock = Lock()
+subtask_lock = Lock()
+
 
 
 # DB OPERATIONS
@@ -285,27 +320,125 @@ def server_interactions():
                 replica_lock.acquire()
                 replica_connections[key] = conn
                 replica_lock.release()
+
+                # marks machine index as available to compute
+                avail_lock.acquire()
+                availability[key] = 1
+                avail_lock.release()
                 # sends tag that this connection is the primary
                 bmsg = (1).to_bytes(1, "big")
                 conn.sendall(bmsg)
 
+                start_new_thread(task_scheduler, (conn, addr, key))
+
                 # sends logs of client dict, sent messages, and message queue, for catchup
-                for i in range(len(files_to_expect)):
-                    file = files_to_expect[i]
-                    filesize = os.path.getsize(file)
-                    id = (i).to_bytes(4, "big")
-                    size = (filesize).to_bytes(8, "big")
-                    conn.sendall(id)
-                    conn.sendall(size)
-                    try:
-                        with open(file, 'rb') as sendafile:
-                            # Send the file over the connection in chunks
-                            bytesread = sendafile.read(1024)
-                            if not bytesread:
-                                break
-                            conn.sendall(bytesread)
-                    except:
-                        print('file error')
+                # for i in range(len(files_to_expect)):
+                #     file = files_to_expect[i]
+                #     filesize = os.path.getsize(file)
+                #     id = (i).to_bytes(4, "big")
+                #     size = (filesize).to_bytes(8, "big")
+                #     conn.sendall(id)
+                #     conn.sendall(size)
+                #     try:
+                #         with open(file, 'rb') as sendafile:
+                #             # Send the file over the connection in chunks
+                #             bytesread = sendafile.read(1024)
+                #             if not bytesread:
+                #                 break
+                #             conn.sendall(bytesread)
+                #     except:
+                #         print('file error')
+            
+
+def task_scheduler(conn, addr, key):
+    worker_state = True
+    while worker_state:
+        subtask = None
+
+        avail_lock.acquire()
+        if availability[key] == 1:
+            # make unavailable
+            availability[key] = 0
+            avail_lock.release()
+
+            # pop subtask from queue
+            subtask_lock.acquire()
+            subtask = subtask_queue.pop(0)
+            subtask_lock.release()
+
+            # send subtask to computing machine
+            send_task(subtask, conn, addr)
+            # TO DO: how large?
+            result = conn.recv()
+            if result:
+                # process result
+                if subtask == "1":
+                    prod_lock.acquire()
+                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
+                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
+                    prod_lock.release()
+                elif subtask == "2":
+                    prod_lock.acquire()
+                    product[int(DIMENSION/2):, :int(DIMENSION/2)] += result
+                    product[int(DIMENSION/2):, int(DIMENSION/2):] -= result
+                    prod_lock.release()
+                elif subtask == "3":
+                    prod_lock.acquire()
+                    product[:int(DIMENSION/2), int(DIMENSION/2):] += result
+                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
+                    prod_lock.release()
+                elif subtask == "4":
+                    prod_lock.acquire()
+                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
+                    product[int(DIMENSION/2):, :int(DIMENSION/2)] += result
+                    prod_lock.release()
+                elif subtask == "5":
+                    prod_lock.acquire()
+                    product[:int(DIMENSION/2), :int(DIMENSION/2)] -= result
+                    product[:int(DIMENSION/2), int(DIMENSION/2):] += result
+                    prod_lock.release()
+                elif subtask == "6":
+                    prod_lock.acquire()
+                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
+                    prod_lock.release()
+                elif subtask == "7":
+                    prod_lock.acquire()
+                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
+                    prod_lock.release()
+
+                # make availability open again
+                avail_lock.acquire()
+                availability[key] = 1
+                avail_lock.release()
+
+            else:
+                # connection broken, server no longer available
+                avail_lock.acquire()
+                availability[key] = 0
+                avail_lock.release()
+
+                # reappend task to queue to reassign
+                subtask_lock.acquire()
+                subtask_queue.append(subtask)
+                subtask_lock.release()
+
+                replica_connections[key] = 0
+                worker_state = False
+                # TO DO: remove connection?
+        else:
+            avail_lock.release()
+
+
+def send_task(subtask, conn, addr):
+    pass
+
+
+
+
+
+
+
+
 
 
 # FULL INITIALIZATION
