@@ -8,6 +8,7 @@ import traceback
 import socket
 import time
 import numpy as np
+import struct
 
 NUM_MACHINES = 8
 
@@ -95,6 +96,11 @@ for i in range(1, 8):
 # locks for changes to subtask_queue and availability dict
 avail_lock = Lock()
 subtask_lock = Lock()
+
+# completed subtasks
+completed = []
+for i in range(1, 8):
+    completed.append(0)
 
 
 
@@ -224,17 +230,50 @@ def backup_message_handling():
     # is_Primary = False maintains a listening thread to the primary connection
     while is_Primary == False:
         # may change dep on wire protocol
-        size = prim_conn.recv(4)
-        dim1 = prim_conn.recv(4)
-        dim2 = prim_conn.recv(4)
-        msg = prim_conn.recv(size)
-        if msg:
+
+        broken_conn = False
+
+
+        met_dat = prim_conn.recv(13)
+        if not met_dat:
+            broken_conn = True
+        else:
+            task_num = met_dat[0]
+
+            dim = met_dat[1:5]
+            dimension = int.from_bytes(dim, byteorder='big')
+
+            size1 = int.from_bytes(met_dat[5:9], "big")
+            size2 = int.from_bytes(met_dat[9:13], "big")
+
+            data = b''
+
+            while len(data) < size1 + size2:
+                chunk = prim_conn.recv(2048)
+                if not chunk:
+                    broken_conn = True
+                    break
+                data += chunk
+
+        if broken_conn == False:
             m1 = np.frombuffer(
-                msg[:size/2], dtype=np.uint8).reshape((dim1, dim2))
+                data[:size1], dtype=np.uint8).reshape((dimension, dimension))
+
             m2 = np.frombuffer(
-                msg[size/2:], dtype=np.uint8).reshape((dim1, dim2))
+                    data[size1:], dtype=np.uint8).reshape((dimension, dimension))
+
             # handles message sent by primary
-            strassen(m1, m2)
+            result = strassen(m1, m2)
+
+            result_bmsg = result.tobytes()
+    
+            header1 = len(result_bmsg).to_bytes(4, "big")
+
+            # What if connection breaks here?: To Do
+            prim_conn.sendall(header1)
+            prim_conn.sendall(result_bmsg)
+
+
         else:
             # empty message means primary connection broken
             # save current backup state
@@ -382,9 +421,24 @@ def task_scheduler(conn, addr, key):
             # send subtask to computing machine
             send_task(subtask, conn, addr)
             # TO DO: how large?
-            result = conn.recv()
-            if result:
+            res_head = conn.recv(4)
+            if not res_head:
+                worker_state = False
+            else:
+                res_size = int.from_bytes(res_head, "big")
+                data = b''
+
+                while len(data) < res_size:
+                    chunk = conn.recv(2048)
+                    if not chunk:
+                        worker_state = False
+                        break
+                    data += chunk
+
+            if worker_state == True:
                 # process result
+                result = np.frombuffer(data, dtype=np.uint8).reshape((int(DIMENSION/2), int(DIMENSION/2)))
+
                 if subtask == "1":
                     prod_lock.acquire()
                     product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
@@ -419,6 +473,8 @@ def task_scheduler(conn, addr, key):
                     product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
                     prod_lock.release()
 
+                completed[int(subtask)-1] = 1
+
                 # make availability open again
                 avail_lock.acquire()
                 availability[key] = 1
@@ -441,9 +497,45 @@ def task_scheduler(conn, addr, key):
         else:
             avail_lock.release()
 
-
+# Sends the task (according to strassen's breakdown of matrix recursion)
 def send_task(subtask, conn, addr):
-    pass
+    tag = (int(subtask)).to_bytes(1, "big")
+    dim = (int(DIMENSION/2)).to_bytes(4, "big")
+    submat1 = None
+    submat2 = None
+    if subtask == "1":
+        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix2[int(DIMENSION/2):, int(DIMENSION/2):]  
+    elif subtask == "2":
+        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] + matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)]
+    elif subtask == "3":
+        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
+        submat2 = matrix2[:int(DIMENSION/2), int(DIMENSION/2):] - matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+    elif subtask == "4":
+        submat1 = matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] - matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] 
+    elif subtask == "5":
+        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix1[:int(DIMENSION/2), int(DIMENSION/2):]
+        submat2 = matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+    elif subtask == "6":
+        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] - matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
+        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix2[:int(DIMENSION/2), int(DIMENSION/2):]
+    elif subtask == "7":
+        submat1 = matrix1[:int(DIMENSION/2), int(DIMENSION/2):] - matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] + matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+
+    submat1_bmsg = submat1.tobytes()
+    submat2_bmsg = submat2.tobytes()
+
+
+    header1 = len(submat1_bmsg).to_bytes(4, "big")
+    header2 = len(submat2_bmsg).to_bytes(4, "big")
+
+    conn.sendall(tag+dim+header1+header2)
+    conn.sendall(submat1_bmsg+submat2_bmsg)
+        
+
 
 
 
