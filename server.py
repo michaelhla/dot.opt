@@ -64,7 +64,7 @@ products = {}
 # replica dictionary, keyed by address and valued at machine id
 replica_dictionary = {"1": (ADDR_1, PORT_1), "2": (
     ADDR_2, PORT_2), "3": (ADDR_3, PORT_3)}
-reverse_rep_dict = {(ADDR_1, PORT_1): "1", (ADDR_2, PORT_2): "2", (ADDR_3, PORT_3): "3"}
+reverse_rep_dict = {(ADDR_1, PORT_1): "1", (ADDR_2, PORT_2)                    : "2", (ADDR_3, PORT_3): "3"}
 
 # replica connections, that are established, changed to the connection once connected
 replica_connections = {}
@@ -136,9 +136,13 @@ def write(flag):
         print(f'ERROR: could not write to {file}')
 
 
+def outer_product(a, b):
+    return np.outer(a, b)
+
 # for backup servers, updates server state as if it were interacting with the client
 # server state only involves creation/deletion of account, plus additions/removals to message queue
 # for each tag, we update the local state and then persist it to the db
+
 
 def split(matrix):
     """
@@ -219,10 +223,18 @@ def backup_message_handling():
     global prim_conn
     # is_Primary = False maintains a listening thread to the primary connection
     while is_Primary == False:
-        msg = prim_conn.recv(2048)
+        # may change dep on wire protocol
+        size = prim_conn.recv(4)
+        dim1 = prim_conn.recv(4)
+        dim2 = prim_conn.recv(4)
+        msg = prim_conn.recv(size)
         if msg:
+            m1 = np.frombuffer(
+                msg[:size/2], dtype=np.uint8).reshape((dim1, dim2))
+            m2 = np.frombuffer(
+                msg[size/2:], dtype=np.uint8).reshape((dim1, dim2))
             # handles message sent by primary
-            strassen(msg[0], msg[1])
+            strassen(m1, m2)
         else:
             # empty message means primary connection broken
             # save current backup state
@@ -284,6 +296,7 @@ def backup_message_handling():
                 is_Primary = True
             print("election done")
             print(is_Primary)
+
 
 # thread handling server interactions; all servers interact at backupserver addresses
 
