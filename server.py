@@ -12,9 +12,9 @@ import struct
 
 NUM_MACHINES = 8
 
-ADDR_1 = "localhost"
-ADDR_2 = "localhost"
-ADDR_3 = "localhost"
+ADDR_1 = "10.250.198.80"
+ADDR_2 = "10.250.198.80"
+ADDR_3 = "10.250.198.80"
 
 
 PORT_1 = 9080
@@ -31,11 +31,14 @@ PORTS = [PORT_1, PORT_2, PORT_3]
 CPORTS = [CPORT_1, CPORT_2, CPORT_3]
 
 
-MATFILE1 = ""
-MATFILE2 = ""
+# MATFILE1 = ""
+# MATFILE2 = ""
 
-matrix1 = np.loadtxt(MATFILE1)
-matrix2 = np.loadtxt(MATFILE2)
+# matrix1 = np.loadtxt(MATFILE1)
+# matrix2 = np.loadtxt(MATFILE2)
+
+matrix1 = np.ones((64, 64))
+matrix2 = np.ones((64, 64))
 matshape = matrix1.shape
 
 DIMENSION = matshape[0]
@@ -103,13 +106,12 @@ for i in range(1, 8):
     completed.append(0)
 
 
-
 # DB OPERATIONS
 
 dbfolder = "dbfolder/"
 
-QPATH = dbfolder + "user" + machine_idx + ".json"
-PRODPATH = dbfolder + "sent" + machine_idx + ".json"
+QPATH = dbfolder + "queue" + machine_idx + ".json"
+PRODPATH = dbfolder + "prod" + machine_idx + ".json"
 
 files_to_expect = [QPATH, PRODPATH]
 local_to_load = [queue, products]
@@ -233,11 +235,12 @@ def backup_message_handling():
 
         broken_conn = False
 
-
         met_dat = prim_conn.recv(13)
+        print(met_dat)
         if not met_dat:
             broken_conn = True
         else:
+
             task_num = met_dat[0]
 
             dim = met_dat[1:5]
@@ -260,19 +263,18 @@ def backup_message_handling():
                 data[:size1], dtype=np.uint8).reshape((dimension, dimension))
 
             m2 = np.frombuffer(
-                    data[size1:], dtype=np.uint8).reshape((dimension, dimension))
+                data[size1:], dtype=np.uint8).reshape((dimension, dimension))
 
             # handles message sent by primary
             result = strassen(m1, m2)
 
             result_bmsg = result.tobytes()
-    
+
             header1 = len(result_bmsg).to_bytes(4, "big")
 
             # What if connection breaks here?: To Do
             prim_conn.sendall(header1)
             prim_conn.sendall(result_bmsg)
-
 
         else:
             # empty message means primary connection broken
@@ -380,6 +382,7 @@ def server_interactions():
                 # sends tag that this connection is the primary
                 bmsg = (1).to_bytes(1, "big")
                 conn.sendall(bmsg)
+                print('sent',  bmsg)
 
                 start_new_thread(task_scheduler, (conn, addr, key))
 
@@ -400,7 +403,7 @@ def server_interactions():
                 #             conn.sendall(bytesread)
                 #     except:
                 #         print('file error')
-            
+
 
 def task_scheduler(conn, addr, key):
     worker_state = True
@@ -437,7 +440,8 @@ def task_scheduler(conn, addr, key):
 
             if worker_state == True:
                 # process result
-                result = np.frombuffer(data, dtype=np.uint8).reshape((int(DIMENSION/2), int(DIMENSION/2)))
+                result = np.frombuffer(data, dtype=np.uint8).reshape(
+                    (int(DIMENSION/2), int(DIMENSION/2)))
 
                 if subtask == "1":
                     prod_lock.acquire()
@@ -498,52 +502,56 @@ def task_scheduler(conn, addr, key):
             avail_lock.release()
 
 # Sends the task (according to strassen's breakdown of matrix recursion)
+
+
 def send_task(subtask, conn, addr):
     tag = (int(subtask)).to_bytes(1, "big")
     dim = (int(DIMENSION/2)).to_bytes(4, "big")
     submat1 = None
     submat2 = None
     if subtask == "1":
-        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix2[int(DIMENSION/2):, int(DIMENSION/2):]  
+        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + \
+            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + \
+            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
     elif subtask == "2":
-        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] + matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] + \
+            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
         submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)]
     elif subtask == "3":
         submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
-        submat2 = matrix2[:int(DIMENSION/2), int(DIMENSION/2):] - matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[:int(DIMENSION/2), int(DIMENSION/2):] - \
+            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
     elif subtask == "4":
         submat1 = matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] - matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] 
+        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] - \
+            matrix2[:int(DIMENSION/2), :int(DIMENSION/2)]
     elif subtask == "5":
-        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix1[:int(DIMENSION/2), int(DIMENSION/2):]
+        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + \
+            matrix1[:int(DIMENSION/2), int(DIMENSION/2):]
         submat2 = matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
     elif subtask == "6":
-        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] - matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
-        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + matrix2[:int(DIMENSION/2), int(DIMENSION/2):]
+        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] - \
+            matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
+        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + \
+            matrix2[:int(DIMENSION/2), int(DIMENSION/2):]
     elif subtask == "7":
-        submat1 = matrix1[:int(DIMENSION/2), int(DIMENSION/2):] - matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] + matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat1 = matrix1[:int(DIMENSION/2), int(DIMENSION/2):] - \
+            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
+        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] + \
+            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
 
     submat1_bmsg = submat1.tobytes()
     submat2_bmsg = submat2.tobytes()
 
-
     header1 = len(submat1_bmsg).to_bytes(4, "big")
     header2 = len(submat2_bmsg).to_bytes(4, "big")
+    meta = tag+dim+header1+header2
+    time.sleep(1)
+    print(meta)
 
-    conn.sendall(tag+dim+header1+header2)
-    conn.sendall(submat1_bmsg+submat2_bmsg)
-        
-
-
-
-
-
-
-
-
-
+    conn.sendall(meta)
+    # conn.sendall(submat1_bmsg+submat2_bmsg)
 
 
 # FULL INITIALIZATION
@@ -603,6 +611,7 @@ for idx in replica_dictionary.keys():
                 try:
                     for i in range(len(files_to_expect)):
                         id = conn_socket.recv(4)
+                        print(id)
                         id = int.from_bytes(id, byteorder='big')
                         file_size = conn_socket.recv(8)
                         file_size = int.from_bytes(file_size, byteorder='big')
