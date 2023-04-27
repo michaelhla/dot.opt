@@ -1,7 +1,7 @@
 
 from sys import argv
 import numpy as np
-# import cuda
+import time
 
 
 def multiply(A, B, C, N):
@@ -75,8 +75,9 @@ def strassen(x, y):
 def main():
     # A = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     # B = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    file = argv[3]
-    n = int(argv[2])
+    # file = argv[3]
+    # n = int(argv[2])
+    n = 256
     # A = np.empty([n, n], dtype=int)
     # B = np.empty([n, n], dtype=int)
     # i = 0
@@ -99,7 +100,10 @@ def main():
 
     A = np.ones((n, n), dtype=int)
     B = np.ones((n, n), dtype=int)
+    begin = time.time()
     res = strassen(A, B)
+    end = time.time()
+    print(end-begin)
     print(res)
     # for k in range(n):
     #     print(res[k][k])

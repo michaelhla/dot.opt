@@ -10,25 +10,22 @@ import time
 import numpy as np
 import struct
 
-NUM_MACHINES = 8
+NUM_MACHINES = 3
 
-ADDR_1 = "10.250.11.249"
-ADDR_2 = "10.250.11.249"
-ADDR_3 = "10.250.11.249"
+ADDR_1 = "10.250.198.80"
+ADDR_2 = "10.250.198.80"
+ADDR_3 = "10.250.198.80"
 
 
 PORT_1 = 9080
 PORT_2 = 9081
 PORT_3 = 9082
 
-CPORT_1 = 8080
-CPORT_2 = 8081
-CPORT_3 = 8082
 
+ADDRS = [ADDR_1 for _ in range(0, NUM_MACHINES)]
+PORTS = [9080+i for i in range(0, NUM_MACHINES)]
 
-ADDRS = [ADDR_1, ADDR_2, ADDR_3]
-PORTS = [PORT_1, PORT_2, PORT_3]
-CPORTS = [CPORT_1, CPORT_2, CPORT_3]
+start, end = 0, 0
 
 
 # MATFILE1 = ""
@@ -37,11 +34,11 @@ CPORTS = [CPORT_1, CPORT_2, CPORT_3]
 # matrix1 = np.loadtxt(MATFILE1)
 # matrix2 = np.loadtxt(MATFILE2)
 
-matrix1 = np.ones((64, 64))
-matrix2 = np.ones((64, 64))
+DIMENSION = 256
+matrix1 = np.ones((DIMENSION, DIMENSION))
+matrix2 = np.ones((DIMENSION, DIMENSION))
 matshape = matrix1.shape
 
-DIMENSION = matshape[0]
 
 product = np.zeros(matshape)
 
@@ -58,17 +55,16 @@ IP = ADDRS[int(machine_idx)-1]
 # Server Port number
 s_port = PORTS[int(machine_idx)-1]
 
-# Client Port number
-c_port = CPORTS[int(machine_idx)-1]
-
 # client username dictionary, with login status: 0 if logged off, corresponding address if logged in
 queue = {}
 products = {}
 
 # replica dictionary, keyed by address and valued at machine id
-replica_dictionary = {"1": (ADDR_1, PORT_1), "2": (
-    ADDR_2, PORT_2), "3": (ADDR_3, PORT_3)}
-reverse_rep_dict = {(ADDR_1, PORT_1): "1", (ADDR_2, PORT_2)                    : "2", (ADDR_3, PORT_3): "3"}
+replica_dictionary = {}
+reverse_rep_dict = {}
+for i in range(1, NUM_MACHINES+1):
+    replica_dictionary[str(i)] = (ADDRS[i-1], PORTS[i-1])
+    reverse_rep_dict[(ADDRS[i-1], PORTS[i-1])] = str(i)
 
 # replica connections, that are established, changed to the connection once connected
 replica_connections = {}
@@ -236,8 +232,7 @@ def backup_message_handling():
         broken_conn = False
 
         met_dat = prim_conn.recv(13)
-        
-        
+
         if not met_dat:
             broken_conn = True
         else:
@@ -247,11 +242,8 @@ def backup_message_handling():
             dim = met_dat[1:5]
             dimension = int.from_bytes(dim, byteorder='big')
 
-
             size1 = int.from_bytes(met_dat[5:9], "big")
             size2 = int.from_bytes(met_dat[9:13], "big")
-
-           
 
             data = b''
 
@@ -268,11 +260,14 @@ def backup_message_handling():
 
             m2 = np.frombuffer(
                 data[size1:], dtype=np.float64).reshape((dimension, dimension))
-            
-            print("done")
+
+            oshape = m1.shape[0]
 
             # handles message sent by primary
             result = strassen(m1, m2)
+            # take the first n rows and columns of the result
+            result = result[:oshape][:oshape]
+            print('finished', task_num)
 
             result_bmsg = result.tobytes()
 
@@ -362,9 +357,9 @@ def server_interactions():
             # tells other incoming connections that it is a backup replica, and it receives a machine index
             conn_type = conn.recv(1)
             index_of_connector = conn_type[0]
-            print("ASDF2")
+            print("------------------")
             print(index_of_connector, 'has connected as backup')
-            print("ASDF2")
+            print("------------------")
             key = str(index_of_connector)
             # is a connecting replica, so the machine index is sent:
             if key in replica_dictionary.keys():
@@ -393,9 +388,17 @@ def server_interactions():
                 # sends tag that this connection is the primary
                 bmsg = (1).to_bytes(1, "big")
                 conn.sendall(bmsg)
-                print('sent',  bmsg)
+                print('acknowledge', key)
 
-                start_new_thread(task_scheduler, (conn, addr, key))
+                ready_conns = [key for key in availability.keys()
+                               if availability[key] == 1]
+                if len(ready_conns) == NUM_MACHINES-1:
+                    # if there are 2 replicas, then the primary can start sending tasks
+                    global start
+                    start = time.time()
+                    for id in ready_conns:
+                        start_new_thread(
+                            task_scheduler, (replica_connections[id], addr, id))
 
                 # sends logs of client dict, sent messages, and message queue, for catchup
                 # for i in range(len(files_to_expect)):
@@ -420,7 +423,6 @@ def task_scheduler(conn, addr, key):
     worker_state = True
     while worker_state:
         subtask = None
-
         avail_lock.acquire()
         subtask_lock.acquire()
         if availability[key] == 1 and len(subtask_queue) > 0:
@@ -432,6 +434,7 @@ def task_scheduler(conn, addr, key):
             # pop subtask from queue
             subtask_lock.acquire()
             subtask = subtask_queue.pop(0)
+            print(subtask, subtask_queue)
             subtask_lock.release()
 
             # send subtask to computing machine
@@ -491,7 +494,6 @@ def task_scheduler(conn, addr, key):
                     prod_lock.release()
 
                 completed[int(subtask)-1] = 1
-                print(int(subtask))
 
                 # make availability open again
                 avail_lock.acquire()
@@ -516,6 +518,8 @@ def task_scheduler(conn, addr, key):
             avail_lock.release()
             if len(subtask_queue) == 0:
                 print(product)
+                end = time.time()
+                print(end - start)
             subtask_lock.release()
             print("YAY")
             break
@@ -566,8 +570,7 @@ def send_task(subtask, conn, addr):
     header1 = len(submat1_bmsg).to_bytes(4, "big")
     header2 = len(submat2_bmsg).to_bytes(4, "big")
     meta = tag+dim+header1+header2
-    time.sleep(1)
-    
+
     conn.sendall(meta)
     conn.sendall(submat1_bmsg+submat2_bmsg)
 
@@ -586,12 +589,7 @@ backupserver.listen()
 
 inputs = [backupserver]
 
-# HANDLES CLIENT SIDE, binds server to client facing address/ports
-clientserver = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-clientserver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-clientserver.bind((IP, c_port))
-clientserver.listen()
-inputs.append(clientserver)
+
 # loads from persistent memory for all servers
 for i in range(len(local_to_load)):
     if i == 0:
