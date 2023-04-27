@@ -336,6 +336,8 @@ def backup_message_handling():
             print("election done")
             print(is_Primary)
 
+            # TO DO: Reconstruction after leader fails
+
 
 # thread handling server interactions; all servers interact at backupserver addresses
 
@@ -599,34 +601,7 @@ for idx in replica_dictionary.keys():
             if tag[0] == 1:
                 primary_exists = True
                 prim_conn = conn_socket
-                # knows it is backup, catches up on server state
-                try:
-                    for i in range(len(files_to_expect)):
-                        id = conn_socket.recv(4)
-                        id = int.from_bytes(id, byteorder='big')
-                        file_size = conn_socket.recv(8)
-                        file_size = int.from_bytes(file_size, byteorder='big')
-                        byteswritten = 0
-                        with open(f'{files_to_expect[id]}', 'wb') as f:
-                            # receive the file contents
-                            while byteswritten < file_size:
-                                buf = min(file_size - byteswritten, 1024)
-                                data = conn_socket.recv(buf)
-                                f.write(data)
-                                byteswritten += len(data)
-                        if local_to_load is not None and byteswritten != 0:
-                            if i == 0:
-                                queue = load_db_to_state(
-                                    files_to_expect[i])
-                                # persistence for the primary
-                            elif i == 1:
-                                products = load_db_to_state(
-                                    files_to_expect[i])
-
-                except Exception as e:
-                    print('init error', e)
-                    traceback.print_exc()
-
+                # knows it is backup
             if tag == 0:
                 # reached out to backup, so nothing to change here, other than replica connection
                 pass
@@ -649,5 +624,4 @@ thread_list = []
 (threading.Thread(target=server_interactions)).start()
 
 
-# todo: leader thread for job coordination
 # coordinated job scheduling and sending
