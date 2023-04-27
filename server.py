@@ -12,9 +12,9 @@ import struct
 
 NUM_MACHINES = 8
 
-ADDR_1 = "10.250.198.80"
-ADDR_2 = "10.250.198.80"
-ADDR_3 = "10.250.198.80"
+ADDR_1 = "10.250.11.249"
+ADDR_2 = "10.250.11.249"
+ADDR_3 = "10.250.11.249"
 
 
 PORT_1 = 9080
@@ -236,7 +236,8 @@ def backup_message_handling():
         broken_conn = False
 
         met_dat = prim_conn.recv(13)
-        print(met_dat)
+        
+        
         if not met_dat:
             broken_conn = True
         else:
@@ -246,8 +247,11 @@ def backup_message_handling():
             dim = met_dat[1:5]
             dimension = int.from_bytes(dim, byteorder='big')
 
+
             size1 = int.from_bytes(met_dat[5:9], "big")
             size2 = int.from_bytes(met_dat[9:13], "big")
+
+           
 
             data = b''
 
@@ -260,10 +264,12 @@ def backup_message_handling():
 
         if broken_conn == False:
             m1 = np.frombuffer(
-                data[:size1], dtype=np.uint8).reshape((dimension, dimension))
+                data[:size1], dtype=np.float64).reshape((dimension, dimension))
 
             m2 = np.frombuffer(
-                data[size1:], dtype=np.uint8).reshape((dimension, dimension))
+                data[size1:], dtype=np.float64).reshape((dimension, dimension))
+            
+            print("done")
 
             # handles message sent by primary
             result = strassen(m1, m2)
@@ -277,6 +283,7 @@ def backup_message_handling():
             prim_conn.sendall(result_bmsg)
 
         else:
+            print("uh oh")
             # empty message means primary connection broken
             # save current backup state
             for i in range(len(files_to_expect)):
@@ -355,7 +362,9 @@ def server_interactions():
             # tells other incoming connections that it is a backup replica, and it receives a machine index
             conn_type = conn.recv(1)
             index_of_connector = conn_type[0]
+            print("ASDF2")
             print(index_of_connector, 'has connected as backup')
+            print("ASDF2")
             key = str(index_of_connector)
             # is a connecting replica, so the machine index is sent:
             if key in replica_dictionary.keys():
@@ -413,10 +422,12 @@ def task_scheduler(conn, addr, key):
         subtask = None
 
         avail_lock.acquire()
-        if availability[key] == 1:
+        subtask_lock.acquire()
+        if availability[key] == 1 and len(subtask_queue) > 0:
             # make unavailable
             availability[key] = 0
             avail_lock.release()
+            subtask_lock.release()
 
             # pop subtask from queue
             subtask_lock.acquire()
@@ -442,7 +453,7 @@ def task_scheduler(conn, addr, key):
 
             if worker_state == True:
                 # process result
-                result = np.frombuffer(data, dtype=np.uint8).reshape(
+                result = np.frombuffer(data, dtype=np.float64).reshape(
                     (int(DIMENSION/2), int(DIMENSION/2)))
 
                 if subtask == "1":
@@ -480,6 +491,7 @@ def task_scheduler(conn, addr, key):
                     prod_lock.release()
 
                 completed[int(subtask)-1] = 1
+                print(int(subtask))
 
                 # make availability open again
                 avail_lock.acquire()
@@ -502,6 +514,11 @@ def task_scheduler(conn, addr, key):
                 # TO DO: remove connection?
         else:
             avail_lock.release()
+            if len(subtask_queue) == 0:
+                print(product)
+            subtask_lock.release()
+            print("YAY")
+            break
 
 # Sends the task (according to strassen's breakdown of matrix recursion)
 
@@ -550,10 +567,9 @@ def send_task(subtask, conn, addr):
     header2 = len(submat2_bmsg).to_bytes(4, "big")
     meta = tag+dim+header1+header2
     time.sleep(1)
-    print(meta)
-
+    
     conn.sendall(meta)
-    # conn.sendall(submat1_bmsg+submat2_bmsg)
+    conn.sendall(submat1_bmsg+submat2_bmsg)
 
 
 # FULL INITIALIZATION
