@@ -34,7 +34,7 @@ start, end = 0, 0
 # matrix1 = np.loadtxt(MATFILE1)
 # matrix2 = np.loadtxt(MATFILE2)
 
-DIMENSION = 256
+DIMENSION = 200
 matrix1 = np.ones((DIMENSION, DIMENSION))
 matrix2 = np.ones((DIMENSION, DIMENSION))
 matshape = matrix1.shape
@@ -98,8 +98,6 @@ subtask_lock = Lock()
 
 # completed subtasks
 completed = []
-for i in range(1, 8):
-    completed.append(0)
 
 
 # DB OPERATIONS
@@ -266,7 +264,7 @@ def backup_message_handling():
             # handles message sent by primary
             result = strassen(m1, m2)
             # take the first n rows and columns of the result
-            result = result[:oshape][:oshape]
+            result = result[:oshape, :oshape]
             print('finished', task_num)
 
             result_bmsg = result.tobytes()
@@ -493,7 +491,7 @@ def task_scheduler(conn, addr, key):
                     product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
                     prod_lock.release()
 
-                completed[int(subtask)-1] = 1
+                completed.append(subtask)
 
                 # make availability open again
                 avail_lock.acquire()
@@ -516,12 +514,12 @@ def task_scheduler(conn, addr, key):
                 # TO DO: remove connection?
         else:
             avail_lock.release()
-            if len(subtask_queue) == 0:
+            if len(completed) == 7:
                 print(product)
                 end = time.time()
                 print(end - start)
+                print("YAY")
             subtask_lock.release()
-            print("YAY")
             break
 
 # Sends the task (according to strassen's breakdown of matrix recursion)
