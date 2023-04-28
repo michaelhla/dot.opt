@@ -73,31 +73,7 @@ def strassen(x, y):
 
 
 def main():
-    # A = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    # B = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    # file = argv[3]
-    # n = int(argv[2])
-    n = 256
-    # A = np.empty([n, n], dtype=int)
-    # B = np.empty([n, n], dtype=int)
-    # i = 0
-    # j = 0
-    # with open(file) as f:
-    #     while i < n:
-    #         while j < n:
-    #             A[i][j] = f.readline()
-    #             j += 1
-    #         j = 0
-    #         i += 1
-    #     i = 0
-    #     j = 0
-    #     while i < n:
-    #         while j < n:
-    #             B[i][j] = f.readline()
-    #             j += 1
-    #         j = 0
-    #         i += 1
-
+    n = 200
     A = np.ones((n, n), dtype=int)
     B = np.ones((n, n), dtype=int)
     begin = time.time()

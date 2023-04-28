@@ -8,18 +8,13 @@ import traceback
 import socket
 import time
 import numpy as np
-import struct
+import pickle
 
-NUM_MACHINES = 3
+NUM_MACHINES = 4
 
 ADDR_1 = "10.250.198.80"
 ADDR_2 = "10.250.198.80"
 ADDR_3 = "10.250.198.80"
-
-
-PORT_1 = 9080
-PORT_2 = 9081
-PORT_3 = 9082
 
 
 ADDRS = [ADDR_1 for _ in range(0, NUM_MACHINES)]
@@ -41,6 +36,7 @@ matshape = matrix1.shape
 
 
 product = np.zeros(matshape)
+task_log = {}
 
 # Product lock
 prod_lock = Lock()
@@ -260,12 +256,15 @@ def backup_message_handling():
                 data[size1:], dtype=np.float64).reshape((dimension, dimension))
 
             oshape = m1.shape[0]
+            task_log[str(task_num)] = [m1, m2]
 
             # handles message sent by primary
             result = strassen(m1, m2)
             # take the first n rows and columns of the result
             result = result[:oshape, :oshape]
+
             print('finished', task_num)
+            task_log[str(task_num)] = result
 
             result_bmsg = result.tobytes()
 
@@ -299,6 +298,11 @@ def backup_message_handling():
                     test_socket.connect((ADDRS[i-1], PORTS[i-1]))
                     # test_socket.settimeout(int(machine_idx))
                     test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+                    # convert task_log to bytes and send to test_socket with header of size and id
+                    task_log_bmsg = pickle.dumps(task_log)
+                    size = len(task_log_bmsg).to_bytes(4, "big")
+                    bmsg = size + task_log_bmsg
+                    test_socket.sendall(bmsg)
 
                     test_socket.settimeout(None)
 
@@ -341,6 +345,14 @@ def backup_message_handling():
             # TO DO: Reconstruction after leader fails
 
 
+def catchup():
+    for conn in replica_connections():
+        size = conn.recv(4)
+        log_size = msg[0:4]
+        bytes_log = msg[4:int(size)]
+        task_log = pickle.loads(bytes_log)
+    print("caught up")
+
 # thread handling server interactions; all servers interact at backupserver addresses
 
 
@@ -371,6 +383,7 @@ def server_interactions():
             # primary behavior
             # still receives a connection, and gets an index of the connector
             conn_type = conn.recv(1)
+            catchup()
             index_of_connector = conn_type[0]
             key = str(index_of_connector)
             # if other replica is connecting:
@@ -391,30 +404,12 @@ def server_interactions():
                 ready_conns = [key for key in availability.keys()
                                if availability[key] == 1]
                 if len(ready_conns) == NUM_MACHINES-1:
-                    # if there are 2 replicas, then the primary can start sending tasks
+                    # if all nodes connected, then the primary can start sending tasks
                     global start
                     start = time.time()
                     for id in ready_conns:
                         start_new_thread(
                             task_scheduler, (replica_connections[id], addr, id))
-
-                # sends logs of client dict, sent messages, and message queue, for catchup
-                # for i in range(len(files_to_expect)):
-                #     file = files_to_expect[i]
-                #     filesize = os.path.getsize(file)
-                #     id = (i).to_bytes(4, "big")
-                #     size = (filesize).to_bytes(8, "big")
-                #     conn.sendall(id)
-                #     conn.sendall(size)
-                #     try:
-                #         with open(file, 'rb') as sendafile:
-                #             # Send the file over the connection in chunks
-                #             bytesread = sendafile.read(1024)
-                #             if not bytesread:
-                #                 break
-                #             conn.sendall(bytesread)
-                #     except:
-                #         print('file error')
 
 
 def task_scheduler(conn, addr, key):
@@ -645,3 +640,21 @@ thread_list = []
 
 
 # coordinated job scheduling and sending
+
+# sends logs of client dict, sent messages, and message queue, for catchup
+# for i in range(len(files_to_expect)):
+#     file = files_to_expect[i]
+#     filesize = os.path.getsize(file)
+#     id = (i).to_bytes(4, "big")
+#     size = (filesize).to_bytes(8, "big")
+#     conn.sendall(id)
+#     conn.sendall(size)
+#     try:
+#         with open(file, 'rb') as sendafile:
+#             # Send the file over the connection in chunks
+#             bytesread = sendafile.read(1024)
+#             if not bytesread:
+#                 break
+#             conn.sendall(bytesread)
+#     except:
+#         print('file error')
