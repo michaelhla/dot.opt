@@ -223,17 +223,20 @@ def backup_message_handling():
     global is_Primary
     # global varibale storing connection to the primary
     global prim_conn
+    header1 = None
+    result_bmsg = None
     # is_Primary = False maintains a listening thread to the primary connection
     while is_Primary == False:
         # may change dep on wire protocol
-
         broken_conn = False
 
         met_dat = prim_conn.recv(13)
-
         if not met_dat:
             broken_conn = True
         else:
+            if result_bmsg is not None:
+                prim_conn.sendall(header1)
+                prim_conn.sendall(result_bmsg)
 
             task_num = met_dat[0]
 
@@ -273,10 +276,6 @@ def backup_message_handling():
             result_bmsg = result.tobytes()
 
             header1 = len(result_bmsg).to_bytes(4, "big")
-
-            # What if connection breaks here?: To Do
-            prim_conn.sendall(header1)
-            prim_conn.sendall(result_bmsg)
 
         else:
             print("uh oh")
@@ -654,13 +653,12 @@ if primary_exists == False:
 
 print('is primary:', is_Primary)
 
-# list of threads that are always concurrent
-thread_list = []
+
 (threading.Thread(target=backup_message_handling)).start()
 (threading.Thread(target=server_interactions)).start()
 
 
-# coordinated job scheduling and sending
+# code that could be used later
 
 # sends logs of client dict, sent messages, and message queue, for catchup
 # for i in range(len(files_to_expect)):
