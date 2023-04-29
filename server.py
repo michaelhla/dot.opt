@@ -36,7 +36,10 @@ matshape = matrix1.shape
 
 
 product = np.zeros(matshape)
+log_lock = Lock()
+# task_log = {'-1': 'Server started'} # for testing
 task_log = {}
+
 
 # Product lock
 prod_lock = Lock()
@@ -72,6 +75,7 @@ replica_lock = Lock()
 
 # defined global variable of whether replica is primary or backup
 is_Primary = False
+from_elec = False
 
 # lock for the message queue
 dict_lock = Lock()
@@ -281,6 +285,8 @@ def backup_message_handling():
             for i in range(len(files_to_expect)):
                 write(i)
 
+            prim_conn.close()
+
             # handle leader election
             # if this doesnt work, use test sockets that are close
 
@@ -296,13 +302,16 @@ def backup_message_handling():
                         socket.AF_INET, socket.SOCK_STREAM)
                     # if this fails, goes to ConnectionRefusedError
                     test_socket.connect((ADDRS[i-1], PORTS[i-1]))
+
                     # test_socket.settimeout(int(machine_idx))
                     test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+
                     # convert task_log to bytes and send to test_socket with header of size and id
                     task_log_bmsg = pickle.dumps(task_log)
                     size = len(task_log_bmsg).to_bytes(4, "big")
-                    bmsg = size + task_log_bmsg
-                    test_socket.sendall(bmsg)
+                    test_socket.sendall(size)
+                    test_socket.sendall(task_log_bmsg)
+                    print('sent to primary', task_log)
 
                     test_socket.settimeout(None)
 
@@ -339,20 +348,30 @@ def backup_message_handling():
             # if after connecting, backup is lowest running, elected as primary
             if is_Lowest == True:
                 is_Primary = True
+                global from_elec
+                from_elec = True
+                # catchup()
             print("election done")
-            print(is_Primary)
+            print('Am I the primary?', is_Primary)
 
             # TO DO: Reconstruction after leader fails
 
 
-def catchup():
-    for conn in replica_connections():
+def catchup(conn):
+    try:
         size = conn.recv(4)
-        log_size = msg[0:4]
-        bytes_log = msg[4:int(size)]
-        task_log = pickle.loads(bytes_log)
-    print("caught up")
+        bytes_log = conn.recv(int.from_bytes(size, "big"))
+        if bytes_log is not None:
+            rec_log = pickle.loads(bytes_log)
+            log_lock.acquire()
+            for key in rec_log.keys():
+                task_log[key] = rec_log[key]
+            print('new task log', task_log)
+            log_lock.release()
+            print("caught up with", conn)
 
+    except Exception as e:
+        print('ERROR with', conn, e)
 # thread handling server interactions; all servers interact at backupserver addresses
 
 
@@ -369,6 +388,7 @@ def server_interactions():
             index_of_connector = conn_type[0]
             print("------------------")
             print(index_of_connector, 'has connected as backup')
+            print(conn)
             print("------------------")
             key = str(index_of_connector)
             # is a connecting replica, so the machine index is sent:
@@ -383,7 +403,8 @@ def server_interactions():
             # primary behavior
             # still receives a connection, and gets an index of the connector
             conn_type = conn.recv(1)
-            catchup()
+            if from_elec == True:
+                catchup(conn)
             index_of_connector = conn_type[0]
             key = str(index_of_connector)
             # if other replica is connecting:
