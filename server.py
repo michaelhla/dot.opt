@@ -12,9 +12,9 @@ import pickle
 
 NUM_MACHINES = 4
 
-ADDR_1 = "10.250.198.80"
-ADDR_2 = "10.250.198.80"
-ADDR_3 = "10.250.198.80"
+ADDR_1 = "10.250.11.249"
+ADDR_2 = "10.250.11.249"
+ADDR_3 = "10.250.11.249"
 
 
 ADDRS = [ADDR_1 for _ in range(0, NUM_MACHINES)]
@@ -232,6 +232,7 @@ def backup_message_handling():
         else:
 
             task_num = met_dat[0]
+            print(task_num)
 
             dim = met_dat[1:5]
             dimension = int.from_bytes(dim, byteorder='big')
@@ -383,7 +384,7 @@ def server_interactions():
             # primary behavior
             # still receives a connection, and gets an index of the connector
             conn_type = conn.recv(1)
-            catchup()
+            # catchup()
             index_of_connector = conn_type[0]
             key = str(index_of_connector)
             # if other replica is connecting:
