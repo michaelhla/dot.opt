@@ -39,6 +39,7 @@ product = np.zeros(matshape)
 log_lock = Lock()
 # task_log = {'-1': 'Server started'} # for testing
 task_log = {}
+my_finished = 99999999999
 
 
 # Product lock
@@ -223,6 +224,7 @@ def backup_message_handling():
     global is_Primary
     # global varibale storing connection to the primary
     global prim_conn
+    global my_finished
     header1 = None
     result_bmsg = None
     # is_Primary = False maintains a listening thread to the primary connection
@@ -271,6 +273,7 @@ def backup_message_handling():
             result = result[:oshape, :oshape]
 
             print('finished', task_num)
+            my_finished = time.time()
             task_log[str(task_num)] = result
 
             result_bmsg = result.tobytes()
@@ -285,75 +288,75 @@ def backup_message_handling():
                 write(i)
 
             prim_conn.close()
+            fastest_leader()
 
-            # handle leader election
-            # if this doesnt work, use test sockets that are close
 
-            # variable marking if current replica is the lowest idx still running
-            is_Lowest = True
-            # try to connect to all machines with a lower index, as election is determined by lowest current running index
-            for i in range(1, int(machine_idx)):
-                try:
-                    # ensures ordering of leader election, replacement for conn.active()
-                    time.sleep((int(machine_idx)-2)*0.2)
-                    # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
-                    test_socket = socket.socket(
-                        socket.AF_INET, socket.SOCK_STREAM)
-                    # if this fails, goes to ConnectionRefusedError
-                    test_socket.connect((ADDRS[i-1], PORTS[i-1]))
+def fastest_leader():
+    is_fastest = True
+    global prim_conn
+    # try to connect to all machines with a lower index, as election is determined by lowest current running index
+    for i in range(1, len(replica_dictionary.keys())):
+        try:
+            # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
+            test_socket = socket.socket(
+                socket.AF_INET, socket.SOCK_STREAM)
+            # if this fails, goes to ConnectionRefusedError
+            test_socket.connect((ADDRS[i-1], PORTS[i-1]))
+            test_socket.settimeout(1)
+            # this will not work, not sure where to test_socket.send for this to receive
+            their_finished = test_socket.recv(1)
+            test_socket.settimeout(None)
+            if their_finished < my_finished:
+                prim_conn = test_socket
+                # test_socket.settimeout(int(machine_idx))
+                test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
 
-                    # test_socket.settimeout(int(machine_idx))
-                    test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+                # convert task_log to bytes and send to test_socket with header of size and id
+                task_log_bmsg = pickle.dumps(task_log)
+                size = len(task_log_bmsg).to_bytes(4, "big")
+                test_socket.sendall(size)
+                test_socket.sendall(task_log_bmsg)
+                print('sent to primary', task_log)
 
-                    # convert task_log to bytes and send to test_socket with header of size and id
-                    task_log_bmsg = pickle.dumps(task_log)
-                    size = len(task_log_bmsg).to_bytes(4, "big")
-                    test_socket.sendall(size)
-                    test_socket.sendall(task_log_bmsg)
-                    print('sent to primary', task_log)
+                # replaces any previous connection with the test_socket, for clarity
+                replica_lock.acquire()
+                if replica_connections[str(i)] != 0:
+                    replica_connections[str(i)].close()
+                replica_connections[str(i)] = test_socket
+                replica_lock.release()
 
-                    test_socket.settimeout(None)
-
-                    # replaces any previous connection with the test_socket, for clarity
-                    replica_lock.acquire()
-                    if replica_connections[str(i)] != 0:
-                        replica_connections[str(i)].close()
-                    replica_connections[str(i)] = test_socket
-                    replica_lock.release()
-
-                    # ensures connection to primary, by reciving the return tag
-                    ret_tag = test_socket.recv(1)[0]
-                    if ret_tag == 1:
-                        # there is a smaller machine index still runnning, so still backup
-                        is_Lowest = False
-                        prim_conn = replica_connections[str(i)]
-
-                except ConnectionRefusedError:
-                    # this means the connection to a lower index is down, so is_Lowest is still True
-                    replica_lock.acquire()
-                    if replica_connections[str(i)] != 0:
-                        replica_connections[str(i)].close()
-                    replica_connections[str(i)] = 0
-                    replica_lock.release()
-                    continue
-                except Exception as e:
-                    print(e)
-                    replica_lock.acquire()
-                    if replica_connections[str(i)] != 0:
-                        replica_connections[str(i)].close()
-                    replica_connections[str(i)] = 0
-                    replica_lock.release()
-                    continue
-            # if after connecting, backup is lowest running, elected as primary
-            if is_Lowest == True:
-                is_Primary = True
-                global from_elec
-                from_elec = True
-                # catchup()
-            print("election done")
-            print('Am I the primary?', is_Primary)
-
-            # TO DO: Reconstruction after leader fails
+                # ensures connection to primary, by reciving the return tag
+                ret_tag = test_socket.recv(1)[0]
+                if ret_tag == 1:
+                    # there is a smaller machine index still runnning, so still backup
+                    is_fastest = False
+                    prim_conn = replica_connections[str(i)]
+        except ConnectionRefusedError:
+            # this means the connection to a lower index is down, so is_Lowest is still True
+            replica_lock.acquire()
+            if replica_connections[str(i)] != 0:
+                replica_connections[str(i)].close()
+            replica_connections[str(i)] = 0
+            replica_lock.release()
+            continue
+        except TimeoutError:
+            print(f'machine {i} is not done')
+        except Exception as e:
+            print(e)
+            replica_lock.acquire()
+            if replica_connections[str(i)] != 0:
+                replica_connections[str(i)].close()
+            replica_connections[str(i)] = 0
+            replica_lock.release()
+            continue
+    # if after connecting, backup is lowest running, elected as primary
+    if is_fastest == True:
+        is_Primary = True
+        global from_elec
+        from_elec = True
+        # catchup()
+    print("election done")
+    print('Am I the primary?', is_Primary)
 
 
 def catchup(conn):
@@ -423,7 +426,7 @@ def server_interactions():
 
                 ready_conns = [key for key in availability.keys()
                                if availability[key] == 1]
-                if len(ready_conns) == NUM_MACHINES-1:
+                if len(ready_conns) == NUM_MACHINES-1 or from_elec:
                     # if all nodes connected, then the primary can start sending tasks
                     global start
                     start = time.time()
@@ -678,67 +681,69 @@ print('is primary:', is_Primary)
 #     except:
 #         print('file error')
 
-def fastest_leader():
-    is_fastest = True
-    global prim_conn
-    # try to connect to all machines with a lower index, as election is determined by lowest current running index
-    for i in range(1, len(replica_dictionary.keys())):
-        try:
-            # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
-            test_socket = socket.socket(
-                socket.AF_INET, socket.SOCK_STREAM)
-            # if this fails, goes to ConnectionRefusedError
-            test_socket.connect((ADDRS[i-1], PORTS[i-1]))
-            finished = test_socket.recv(1)
-            if finished == 1:
-                prim_conn = test_socket
+# handle leader election
+# variable marking if current replica is the lowest idx still running
+# is_Lowest = True
+# # try to connect to all machines with a lower index, as election is determined by lowest current running index
+# for i in range(1, int(machine_idx)):
+#     try:
+#         # ensures ordering of leader election, replacement for conn.active()
+#         time.sleep((int(machine_idx)-2)*0.2)
+#         # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
+#         test_socket = socket.socket(
+#             socket.AF_INET, socket.SOCK_STREAM)
+#         # if this fails, goes to ConnectionRefusedError
+#         test_socket.connect((ADDRS[i-1], PORTS[i-1]))
 
-                # test_socket.settimeout(int(machine_idx))
-                test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+#         # test_socket.settimeout(int(machine_idx))
+#         test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
 
-                # convert task_log to bytes and send to test_socket with header of size and id
-                task_log_bmsg = pickle.dumps(task_log)
-                size = len(task_log_bmsg).to_bytes(4, "big")
-                test_socket.sendall(size)
-                test_socket.sendall(task_log_bmsg)
-                print('sent to primary', task_log)
+#         # convert task_log to bytes and send to test_socket with header of size and id
+#         task_log_bmsg = pickle.dumps(task_log)
+#         size = len(task_log_bmsg).to_bytes(4, "big")
+#         test_socket.sendall(size)
+#         test_socket.sendall(task_log_bmsg)
+#         print('sent to primary', task_log)
 
-                test_socket.settimeout(None)
+#         test_socket.settimeout(None)
 
-                # replaces any previous connection with the test_socket, for clarity
-                replica_lock.acquire()
-                if replica_connections[str(i)] != 0:
-                    replica_connections[str(i)].close()
-                replica_connections[str(i)] = test_socket
-                replica_lock.release()
+#         # replaces any previous connection with the test_socket, for clarity
+#         replica_lock.acquire()
+#         if replica_connections[str(i)] != 0:
+#             replica_connections[str(i)].close()
+#         replica_connections[str(i)] = test_socket
+#         replica_lock.release()
 
-                # ensures connection to primary, by reciving the return tag
-                ret_tag = test_socket.recv(1)[0]
-                if ret_tag == 1:
-                    # there is a smaller machine index still runnning, so still backup
-                    is_fastest = False
-                    prim_conn = replica_connections[str(i)]
-        except ConnectionRefusedError:
-            # this means the connection to a lower index is down, so is_Lowest is still True
-            replica_lock.acquire()
-            if replica_connections[str(i)] != 0:
-                replica_connections[str(i)].close()
-            replica_connections[str(i)] = 0
-            replica_lock.release()
-            continue
-        except Exception as e:
-            print(e)
-            replica_lock.acquire()
-            if replica_connections[str(i)] != 0:
-                replica_connections[str(i)].close()
-            replica_connections[str(i)] = 0
-            replica_lock.release()
-            continue
-    # if after connecting, backup is lowest running, elected as primary
-    if is_fastest == True:
-        is_Primary = True
-        global from_elec
-        from_elec = True
-        # catchup()
-    print("election done")
-    print('Am I the primary?', is_Primary)
+#         # ensures connection to primary, by reciving the return tag
+#         ret_tag = test_socket.recv(1)[0]
+#         if ret_tag == 1:
+#             # there is a smaller machine index still runnning, so still backup
+#             is_Lowest = False
+#             prim_conn = replica_connections[str(i)]
+
+#     except ConnectionRefusedError:
+#         # this means the connection to a lower index is down, so is_Lowest is still True
+#         replica_lock.acquire()
+#         if replica_connections[str(i)] != 0:
+#             replica_connections[str(i)].close()
+#         replica_connections[str(i)] = 0
+#         replica_lock.release()
+#         continue
+#     except Exception as e:
+#         print(e)
+#         replica_lock.acquire()
+#         if replica_connections[str(i)] != 0:
+#             replica_connections[str(i)].close()
+#         replica_connections[str(i)] = 0
+#         replica_lock.release()
+#         continue
+# # if after connecting, backup is lowest running, elected as primary
+# if is_Lowest == True:
+#     is_Primary = True
+#     global from_elec
+#     from_elec = True
+#     # catchup()
+# print("election done")
+# print('Am I the primary?', is_Primary)
+
+# # TO DO: Reconstruction after leader fails
