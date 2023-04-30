@@ -1,3 +1,4 @@
+import struct
 import threading
 import os
 import json
@@ -10,7 +11,7 @@ import time
 import numpy as np
 import pickle
 
-NUM_MACHINES = 4
+NUM_MACHINES = 3
 
 ADDR_1 = "10.250.198.80"
 ADDR_2 = "10.250.198.80"
@@ -39,7 +40,6 @@ product = np.zeros(matshape)
 log_lock = Lock()
 # task_log = {'-1': 'Server started'} # for testing
 task_log = {}
-my_finished = 99999999999
 
 
 # Product lock
@@ -48,6 +48,7 @@ prod_lock = Lock()
 
 # Machine number
 machine_idx = str(sys.argv[1])
+my_finished = 9999999 + int(machine_idx)
 
 # IP address
 IP = ADDRS[int(machine_idx)-1]
@@ -297,14 +298,18 @@ def fastest_leader():
     # try to connect to all machines with a lower index, as election is determined by lowest current running index
     for i in range(1, len(replica_dictionary.keys())):
         try:
+            # ensures ordering of leader election, replacement for conn.active()
+            time.sleep((int(machine_idx)-2)*0.2)
             # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
             test_socket = socket.socket(
                 socket.AF_INET, socket.SOCK_STREAM)
             # if this fails, goes to ConnectionRefusedError
             test_socket.connect((ADDRS[i-1], PORTS[i-1]))
-            test_socket.settimeout(1)
-            # this will not work, not sure where to test_socket.send for this to receive
-            their_finished = test_socket.recv(1)
+            test_socket.settimeout(2)
+            # this will not work, sends and recvs need to be carefully ordered for this to work
+            test_socket.sendall(struct.pack('f', my_finished))
+            their_finished = test_socket.recv(4)
+            their_finished = struct.unpack('f', their_finished)[0]
             test_socket.settimeout(None)
             if their_finished < my_finished:
                 prim_conn = test_socket
@@ -339,7 +344,7 @@ def fastest_leader():
             replica_connections[str(i)] = 0
             replica_lock.release()
             continue
-        except TimeoutError:
+        except socket.timeout:
             print(f'machine {i} is not done')
         except Exception as e:
             print(e)
