@@ -11,36 +11,30 @@ import time
 import numpy as np
 import pickle
 
-NUM_MACHINES = 3
+NUM_MACHINES = 8
 
-ADDR_1 = "10.250.11.249"
-ADDR_2 = "10.250.11.249"
-ADDR_3 = "10.250.11.249"
+ADDR_1 = "172.31.22.5"
+ADDR_2 = "172.31.20.103"
+ADDR_3 = "172.31.16.178"
 
 
-ADDRS = [ADDR_1 for _ in range(0, NUM_MACHINES)]
+ADDRS = [ADDR_1, ADDR_2, ADDR_3, '172.31.23.163', '172.31.24.221',
+         '172.31.18.185', '172.31.30.125', '172.31.26.203']
+PUB_ADDRS = ['18.222.0.123', '3.138.193.5', '18.220.90.168']
 PORTS = [9080+i for i in range(0, NUM_MACHINES)]
 
 start, end = 0, 0
 
 
-# MATFILE1 = ""
-# MATFILE2 = ""
-
-# matrix1 = np.loadtxt(MATFILE1)
-# matrix2 = np.loadtxt(MATFILE2)
-
-DIMENSION = 200
+DIMENSION = 800
 matrix1 = np.ones((DIMENSION, DIMENSION))
 matrix2 = np.ones((DIMENSION, DIMENSION))
 matshape = matrix1.shape
 
 
+global product
 product = np.zeros(matshape)
-log_lock = Lock()
-# task_log = {'-1': 'Server started'} # for testing
 task_log = {}
-
 
 # Product lock
 prod_lock = Lock()
@@ -48,7 +42,6 @@ prod_lock = Lock()
 
 # Machine number
 machine_idx = str(sys.argv[1])
-my_finished = 9999999 + int(machine_idx)
 
 # IP address
 IP = ADDRS[int(machine_idx)-1]
@@ -59,6 +52,9 @@ s_port = PORTS[int(machine_idx)-1]
 # client username dictionary, with login status: 0 if logged off, corresponding address if logged in
 queue = {}
 products = {}
+
+log_lock = Lock()
+
 
 # replica dictionary, keyed by address and valued at machine id
 replica_dictionary = {}
@@ -77,7 +73,6 @@ replica_lock = Lock()
 
 # defined global variable of whether replica is primary or backup
 is_Primary = False
-from_elec = False
 
 # lock for the message queue
 dict_lock = Lock()
@@ -91,7 +86,7 @@ for i in range(1, NUM_MACHINES+1):
 
 # Checks to see what subtasks are remaining
 subtask_queue = []
-for i in range(1, 8):
+for i in range(1, DIMENSION+1):
     subtask_queue.append(str(i))
 
 # locks for changes to subtask_queue and availability dict
@@ -119,7 +114,7 @@ def load_db_to_state(path):
             res_dictionary = json.load(f)
     except Exception as e:
         res_dictionary = {}
-        print(e)
+        # print(e)
 
     return res_dictionary
 
@@ -133,11 +128,12 @@ def write(flag):
         dict = products
     file = files_to_expect[flag]
     try:
-        print(dict, file)
+        # print(dict, file)
         with open(file, 'w') as f:
             json.dump(dict, f)
     except:
-        print(f'ERROR: could not write to {file}')
+        # print(f'ERROR: could not write to {file}')
+        pass
 
 
 def outer_product(a, b):
@@ -213,7 +209,7 @@ def send_to_replicas(message):
             try:
                 replica_connections[idx].sendall(message)
             except Exception as e:
-                print(e)
+                # print(e)
                 continue
 
 
@@ -225,34 +221,28 @@ def backup_message_handling():
     global is_Primary
     # global varibale storing connection to the primary
     global prim_conn
-    global my_finished
-    header1 = None
-    result_bmsg = None
     # is_Primary = False maintains a listening thread to the primary connection
     while is_Primary == False:
         # may change dep on wire protocol
+
         broken_conn = False
 
-        met_dat = prim_conn.recv(13)
+        met_dat = prim_conn.recv(8)
+
         if not met_dat:
             broken_conn = True
         else:
-            if result_bmsg is not None:
-                prim_conn.sendall(header1)
-                prim_conn.sendall(result_bmsg)
 
-            task_num = met_dat[0]
-            print(task_num)
+            task_num = met_dat[0:4]
 
-            dim = met_dat[1:5]
+            dim = met_dat[4:]
             dimension = int.from_bytes(dim, byteorder='big')
 
-            size1 = int.from_bytes(met_dat[5:9], "big")
-            size2 = int.from_bytes(met_dat[9:13], "big")
+            size = dimension*8
 
             data = b''
 
-            while len(data) < size1 + size2:
+            while len(data) < size+size:
                 chunk = prim_conn.recv(2048)
                 if not chunk:
                     broken_conn = True
@@ -261,108 +251,105 @@ def backup_message_handling():
 
         if broken_conn == False:
             m1 = np.frombuffer(
-                data[:size1], dtype=np.float64).reshape((dimension, dimension))
+                data[:size], dtype=np.float64)
 
             m2 = np.frombuffer(
-                data[size1:], dtype=np.float64).reshape((dimension, dimension))
+                data[size:], dtype=np.float64)
 
             oshape = m1.shape[0]
             task_log[str(task_num)] = [m1, m2]
 
             # handles message sent by primary
-            result = strassen(m1, m2)
+            result = np.outer(m1, m2)
             # take the first n rows and columns of the result
-            result = result[:oshape, :oshape]
+            # result = result[:oshape, :oshape]
 
             print('finished', task_num)
-            my_finished = time.time()
             task_log[str(task_num)] = result
 
             result_bmsg = result.tobytes()
 
             header1 = len(result_bmsg).to_bytes(4, "big")
 
+            # What if connection breaks here?: To Do
+
+            prim_conn.sendall(header1)
+            prim_conn.sendall(result_bmsg)
+            # DELETE LATER
+            # return
+            # prim_conn.close()
+            # backupserver.close()
+            # sys.exit(0)
+
         else:
-            print("uh oh")
+            # print("uh oh")
             # empty message means primary connection broken
             # save current backup state
             for i in range(len(files_to_expect)):
                 write(i)
 
-            prim_conn.close()
-            fastest_leader()
+            # handle leader election
+            # if this doesnt work, use test sockets that are close
 
+            # variable marking if current replica is the lowest idx still running
+            is_Lowest = True
+            # try to connect to all machines with a lower index, as election is determined by lowest current running index
+            for i in range(1, int(machine_idx)):
+                try:
+                    # ensures ordering of leader election, replacement for conn.active()
+                    time.sleep((int(machine_idx)-2)*0.2)
+                    # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
+                    test_socket = socket.socket(
+                        socket.AF_INET, socket.SOCK_STREAM)
+                    # if this fails, goes to ConnectionRefusedError
+                    test_socket.connect((ADDRS[i-1], PORTS[i-1]))
+                    # test_socket.settimeout(int(machine_idx))
+                    test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+                    # convert task_log to bytes and send to test_socket with header of size and id
+                    task_log_bmsg = pickle.dumps(task_log)
+                    size = len(task_log_bmsg).to_bytes(4, "big")
+                    bmsg = size + task_log_bmsg
+                    test_socket.sendall(bmsg)
 
-def fastest_leader():
-    is_fastest = True
-    global prim_conn
-    # try to connect to all machines with a lower index, as election is determined by lowest current running index
-    for i in range(1, len(replica_dictionary.keys())):
-        try:
-            # ensures ordering of leader election, replacement for conn.active()
-            time.sleep((int(machine_idx)-2)*0.2)
-            # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
-            test_socket = socket.socket(
-                socket.AF_INET, socket.SOCK_STREAM)
-            # if this fails, goes to ConnectionRefusedError
-            test_socket.connect((ADDRS[i-1], PORTS[i-1]))
-            test_socket.settimeout(2)
-            # this will not work, sends and recvs need to be carefully ordered for this to work
-            test_socket.sendall(struct.pack('f', my_finished))
-            their_finished = test_socket.recv(4)
-            their_finished = struct.unpack('f', their_finished)[0]
-            test_socket.settimeout(None)
-            if their_finished < my_finished:
-                prim_conn = test_socket
-                # test_socket.settimeout(int(machine_idx))
-                test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
+                    test_socket.settimeout(None)
 
-                # convert task_log to bytes and send to test_socket with header of size and id
-                task_log_bmsg = pickle.dumps(task_log)
-                size = len(task_log_bmsg).to_bytes(4, "big")
-                test_socket.sendall(size)
-                test_socket.sendall(task_log_bmsg)
-                print('sent to primary', task_log)
+                    # replaces any previous connection with the test_socket, for clarity
+                    replica_lock.acquire()
+                    if replica_connections[str(i)] != 0:
+                        replica_connections[str(i)].close()
+                    replica_connections[str(i)] = test_socket
+                    replica_lock.release()
 
-                # replaces any previous connection with the test_socket, for clarity
-                replica_lock.acquire()
-                if replica_connections[str(i)] != 0:
-                    replica_connections[str(i)].close()
-                replica_connections[str(i)] = test_socket
-                replica_lock.release()
+                    # ensures connection to primary, by reciving the return tag
+                    ret_tag = test_socket.recv(1)[0]
+                    if ret_tag == 1:
+                        # there is a smaller machine index still runnning, so still backup
+                        is_Lowest = False
+                        prim_conn = replica_connections[str(i)]
 
-                # ensures connection to primary, by reciving the return tag
-                ret_tag = test_socket.recv(1)[0]
-                if ret_tag == 1:
-                    # there is a smaller machine index still runnning, so still backup
-                    is_fastest = False
-                    prim_conn = replica_connections[str(i)]
-        except ConnectionRefusedError:
-            # this means the connection to a lower index is down, so is_Lowest is still True
-            replica_lock.acquire()
-            if replica_connections[str(i)] != 0:
-                replica_connections[str(i)].close()
-            replica_connections[str(i)] = 0
-            replica_lock.release()
-            continue
-        except socket.timeout:
-            print(f'machine {i} is not done')
-        except Exception as e:
-            print(e)
-            replica_lock.acquire()
-            if replica_connections[str(i)] != 0:
-                replica_connections[str(i)].close()
-            replica_connections[str(i)] = 0
-            replica_lock.release()
-            continue
-    # if after connecting, backup is lowest running, elected as primary
-    if is_fastest == True:
-        is_Primary = True
-        global from_elec
-        from_elec = True
-        # catchup()
-    print("election done")
-    print('Am I the primary?', is_Primary)
+                except ConnectionRefusedError:
+                    # this means the connection to a lower index is down, so is_Lowest is still True
+                    replica_lock.acquire()
+                    if replica_connections[str(i)] != 0:
+                        replica_connections[str(i)].close()
+                    replica_connections[str(i)] = 0
+                    replica_lock.release()
+                    continue
+                except Exception as e:
+                    # print(e)
+                    replica_lock.acquire()
+                    if replica_connections[str(i)] != 0:
+                        replica_connections[str(i)].close()
+                    replica_connections[str(i)] = 0
+                    replica_lock.release()
+                    continue
+            # if after connecting, backup is lowest running, elected as primary
+            if is_Lowest == True:
+                is_Primary = True
+            # print("election done")
+            # print(is_Primary)
+
+            # TO DO: Reconstruction after leader fails
 
 
 def catchup(conn):
@@ -374,12 +361,13 @@ def catchup(conn):
             log_lock.acquire()
             for key in rec_log.keys():
                 task_log[key] = rec_log[key]
-            print('new task log', task_log)
+            # print('new task log', task_log)
             log_lock.release()
-            print("caught up with", conn)
+            # print("caught up with", conn)
 
     except Exception as e:
-        print('ERROR with', conn, e)
+        # print('ERROR with', conn, e)
+        pass
 # thread handling server interactions; all servers interact at backupserver addresses
 
 
@@ -396,7 +384,6 @@ def server_interactions():
             index_of_connector = conn_type[0]
             print("------------------")
             print(index_of_connector, 'has connected as backup')
-            print(conn)
             print("------------------")
             key = str(index_of_connector)
             # is a connecting replica, so the machine index is sent:
@@ -411,8 +398,7 @@ def server_interactions():
             # primary behavior
             # still receives a connection, and gets an index of the connector
             conn_type = conn.recv(1)
-            if from_elec == True:
-                catchup(conn)
+            # catchup(conn)
             index_of_connector = conn_type[0]
             key = str(index_of_connector)
             # if other replica is connecting:
@@ -432,7 +418,7 @@ def server_interactions():
 
                 ready_conns = [key for key in availability.keys()
                                if availability[key] == 1]
-                if len(ready_conns) == NUM_MACHINES-1 or from_elec:
+                if len(ready_conns) == NUM_MACHINES-1:
                     # if all nodes connected, then the primary can start sending tasks
                     global start
                     start = time.time()
@@ -442,6 +428,7 @@ def server_interactions():
 
 
 def task_scheduler(conn, addr, key):
+    global product
     worker_state = True
     while worker_state:
         subtask = None
@@ -456,11 +443,13 @@ def task_scheduler(conn, addr, key):
             # pop subtask from queue
             subtask_lock.acquire()
             subtask = subtask_queue.pop(0)
-            print(subtask, subtask_queue)
+            # print(subtask, subtask_queue)
             subtask_lock.release()
 
             # send subtask to computing machine
+
             send_task(subtask, conn, addr)
+
             # TO DO: how large?
             res_head = conn.recv(4)
             if not res_head:
@@ -479,41 +468,10 @@ def task_scheduler(conn, addr, key):
             if worker_state == True:
                 # process result
                 result = np.frombuffer(data, dtype=np.float64).reshape(
-                    (int(DIMENSION/2), int(DIMENSION/2)))
-
-                if subtask == "1":
-                    prod_lock.acquire()
-                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
-                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
-                    prod_lock.release()
-                elif subtask == "2":
-                    prod_lock.acquire()
-                    product[int(DIMENSION/2):, :int(DIMENSION/2)] += result
-                    product[int(DIMENSION/2):, int(DIMENSION/2):] -= result
-                    prod_lock.release()
-                elif subtask == "3":
-                    prod_lock.acquire()
-                    product[:int(DIMENSION/2), int(DIMENSION/2):] += result
-                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
-                    prod_lock.release()
-                elif subtask == "4":
-                    prod_lock.acquire()
-                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
-                    product[int(DIMENSION/2):, :int(DIMENSION/2)] += result
-                    prod_lock.release()
-                elif subtask == "5":
-                    prod_lock.acquire()
-                    product[:int(DIMENSION/2), :int(DIMENSION/2)] -= result
-                    product[:int(DIMENSION/2), int(DIMENSION/2):] += result
-                    prod_lock.release()
-                elif subtask == "6":
-                    prod_lock.acquire()
-                    product[int(DIMENSION/2):, int(DIMENSION/2):] += result
-                    prod_lock.release()
-                elif subtask == "7":
-                    prod_lock.acquire()
-                    product[:int(DIMENSION/2), :int(DIMENSION/2)] += result
-                    prod_lock.release()
+                    (int(DIMENSION), int(DIMENSION)))
+                prod_lock.acquire()
+                product += result
+                prod_lock.release()
 
                 completed.append(subtask)
 
@@ -538,63 +496,37 @@ def task_scheduler(conn, addr, key):
                 # TO DO: remove connection?
         else:
             avail_lock.release()
-            if len(completed) == 7:
+            subtask_lock.release()
+            if len(completed) == DIMENSION:
                 print(product)
                 end = time.time()
-                print(end - start)
-                print("YAY")
-            subtask_lock.release()
+
+                print(str(end-start))
+                with open('times.txt', 'a') as f:
+                    # Write data to the file
+                    f.write(str(end-start)+"\n")
+                    f.close()
             break
 
 # Sends the task (according to strassen's breakdown of matrix recursion)
 
 
 def send_task(subtask, conn, addr):
-    tag = (int(subtask)).to_bytes(1, "big")
-    dim = (int(DIMENSION/2)).to_bytes(4, "big")
-    submat1 = None
-    submat2 = None
-    if subtask == "1":
-        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + \
-            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + \
-            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
-    elif subtask == "2":
-        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] + \
-            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)]
-    elif subtask == "3":
-        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
-        submat2 = matrix2[:int(DIMENSION/2), int(DIMENSION/2):] - \
-            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
-    elif subtask == "4":
-        submat1 = matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] - \
-            matrix2[:int(DIMENSION/2), :int(DIMENSION/2)]
-    elif subtask == "5":
-        submat1 = matrix1[:int(DIMENSION/2), :int(DIMENSION/2)] + \
-            matrix1[:int(DIMENSION/2), int(DIMENSION/2):]
-        submat2 = matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
-    elif subtask == "6":
-        submat1 = matrix1[int(DIMENSION/2):, :int(DIMENSION/2)] - \
-            matrix1[:int(DIMENSION/2), :int(DIMENSION/2)]
-        submat2 = matrix2[:int(DIMENSION/2), :int(DIMENSION/2)] + \
-            matrix2[:int(DIMENSION/2), int(DIMENSION/2):]
-    elif subtask == "7":
-        submat1 = matrix1[:int(DIMENSION/2), int(DIMENSION/2):] - \
-            matrix1[int(DIMENSION/2):, int(DIMENSION/2):]
-        submat2 = matrix2[int(DIMENSION/2):, :int(DIMENSION/2)] + \
-            matrix2[int(DIMENSION/2):, int(DIMENSION/2):]
+    tag = (int(subtask)).to_bytes(4, "big")
+    dim = (int(DIMENSION)).to_bytes(4, "big")
+    column = matrix1[:, int(subtask)-1]
+    row = matrix2[int(subtask)-1, :]
 
-    submat1_bmsg = submat1.tobytes()
-    submat2_bmsg = submat2.tobytes()
+    column_bmsg = column.tobytes()
+    row_bmsg = row.tobytes()
 
-    header1 = len(submat1_bmsg).to_bytes(4, "big")
-    header2 = len(submat2_bmsg).to_bytes(4, "big")
-    meta = tag+dim+header1+header2
+    # maybe change becau
+    # header1 = len(column_bmsg).to_bytes(4, "big")
+    # header2 = len(row_bmsg).to_bytes(4, "big")
+    meta = tag+dim
 
     conn.sendall(meta)
-    conn.sendall(submat1_bmsg+submat2_bmsg)
+    conn.sendall(column_bmsg+row_bmsg)
 
 
 # FULL INITIALIZATION
@@ -608,6 +540,7 @@ backupserver = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 backupserver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 backupserver.bind((IP, s_port))
 backupserver.listen()
+
 
 inputs = [backupserver]
 
@@ -629,7 +562,7 @@ for idx in replica_dictionary.keys():
     if idx != machine_idx:
         try:
             conn_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # print(replica_dictionary[idx])
+          # print(replica_dictionary[idx])
             conn_socket.connect(replica_dictionary[idx])
             mtag = int(machine_idx).to_bytes(1, "big")
             conn_socket.sendall(mtag)
@@ -660,96 +593,36 @@ for idx in replica_dictionary.keys():
 if primary_exists == False:
     is_Primary = True
 
-print('is primary:', is_Primary)
+# print('is primary:', is_Primary)
 
-
+# list of threads that are always concurrent
+thread_list = []
 (threading.Thread(target=backup_message_handling)).start()
 (threading.Thread(target=server_interactions)).start()
 
 
-# code that could be used later
-
-# sends logs of client dict, sent messages, and message queue, for catchup
-# for i in range(len(files_to_expect)):
-#     file = files_to_expect[i]
-#     filesize = os.path.getsize(file)
-#     id = (i).to_bytes(4, "big")
-#     size = (filesize).to_bytes(8, "big")
-#     conn.sendall(id)
-#     conn.sendall(size)
-#     try:
-#         with open(file, 'rb') as sendafile:
-#             # Send the file over the connection in chunks
-#             bytesread = sendafile.read(1024)
-#             if not bytesread:
-#                 break
-#             conn.sendall(bytesread)
-#     except:
-#         print('file error')
-
-# handle leader election
-# variable marking if current replica is the lowest idx still running
-# is_Lowest = True
-# # try to connect to all machines with a lower index, as election is determined by lowest current running index
-# for i in range(1, int(machine_idx)):
-#     try:
-#         # ensures ordering of leader election, replacement for conn.active()
-#         time.sleep((int(machine_idx)-2)*0.2)
-#         # test connection; note that existing connections block, so need to replace existing connection to test if connection is acceptable
-#         test_socket = socket.socket(
-#             socket.AF_INET, socket.SOCK_STREAM)
-#         # if this fails, goes to ConnectionRefusedError
-#         test_socket.connect((ADDRS[i-1], PORTS[i-1]))
-
-#         # test_socket.settimeout(int(machine_idx))
-#         test_socket.sendall(int(machine_idx).to_bytes(1, "big"))
-
-#         # convert task_log to bytes and send to test_socket with header of size and id
-#         task_log_bmsg = pickle.dumps(task_log)
-#         size = len(task_log_bmsg).to_bytes(4, "big")
-#         test_socket.sendall(size)
-#         test_socket.sendall(task_log_bmsg)
-#         print('sent to primary', task_log)
-
-#         test_socket.settimeout(None)
-
-#         # replaces any previous connection with the test_socket, for clarity
-#         replica_lock.acquire()
-#         if replica_connections[str(i)] != 0:
-#             replica_connections[str(i)].close()
-#         replica_connections[str(i)] = test_socket
-#         replica_lock.release()
-
-#         # ensures connection to primary, by reciving the return tag
-#         ret_tag = test_socket.recv(1)[0]
-#         if ret_tag == 1:
-#             # there is a smaller machine index still runnning, so still backup
-#             is_Lowest = False
-#             prim_conn = replica_connections[str(i)]
-
-#     except ConnectionRefusedError:
-#         # this means the connection to a lower index is down, so is_Lowest is still True
-#         replica_lock.acquire()
-#         if replica_connections[str(i)] != 0:
-#             replica_connections[str(i)].close()
-#         replica_connections[str(i)] = 0
-#         replica_lock.release()
-#         continue
-#     except Exception as e:
-#         print(e)
-#         replica_lock.acquire()
-#         if replica_connections[str(i)] != 0:
-#             replica_connections[str(i)].close()
-#         replica_connections[str(i)] = 0
-#         replica_lock.release()
-#         continue
-# # if after connecting, backup is lowest running, elected as primary
-# if is_Lowest == True:
-#     is_Primary = True
-#     global from_elec
-#     from_elec = True
-#     # catchup()
-# print("election done")
-# print('Am I the primary?', is_Primary)
-
 # # TO DO: Reconstruction after leader fails
+# sudo yum install python-pip
+# ssh -i "dot.pem" ec2-user@ec2-52-14-182-200.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py  ec2-user@ec2-52-14-182-200.us-east-2.compute.amazonaws.com:~/.
+#
+# ssh -i "dot.pem" ec2-user@ec2-18-191-66-11.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py  ec2-user@ec2-18-191-66-11.us-east-2.compute.amazonaws.com:~/.
+#
+# ssh -i "dot.pem" ec2-user@ec2-3-19-221-58.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py ec2-user@ec2-3-19-221-58.us-east-2.compute.amazonaws.com:~/.
+#
+# ssh -i "dot.pem" ec2-user@ec2-3-21-39-6.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py  ec2-user@ec2-3-21-39-6.us-east-2.compute.amazonaws.com:~/.
+#
+# ssh -i "dot.pem" ec2-user@ec2-3-142-141-230.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py ec2-user@ec2-3-142-141-230.us-east-2.compute.amazonaws.com:~/.
+#
+# ssh -i "dot.pem" ec2-user@ec2-18-223-168-179.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py ec2-user@ec2-18-223-168-179.us-east-2.compute.amazonaws.com:~/.
+
+# ssh -i "dot.pem" ec2-user@ec2-3-17-12-45.us-east-2.compute.amazonaws.com
+# # scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py ec2-user@ec2-3-17-12-45.us-east-2.compute.amazonaws.com:~/.
+# python3 server.py 1
+# ssh -i "dot.pem" ec2-user@ec2-18-217-90-20.us-east-2.compute.amazonaws.com
+# # scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/server.py ec2-user@ec2-18-217-90-20.us-east-2.compute.amazonaws.com:~/.
