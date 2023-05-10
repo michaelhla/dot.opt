@@ -10,14 +10,11 @@ import time
 import numpy as np
 import pickle
 
-NUM_MACHINES = 4
+NUM_MACHINES = 10
 
-ADDR_1 = "10.250.198.80"
-ADDR_2 = "10.250.198.80"
-ADDR_3 = "10.250.198.80"
+ADDRS = ["10.250.198.80", "172.31.43.235",  "3.16.124.178", "18.222.138.231", "3.144.128.126",
+         "18.217.243.239", "3.16.159.202", "3.144.229.107", "18.225.9.63", "3.144.128.126"]
 
-
-ADDRS = [ADDR_1 for _ in range(0, NUM_MACHINES)]
 PORTS = [9080+i for i in range(0, NUM_MACHINES)]
 
 start, end = 0, 0
@@ -29,7 +26,7 @@ start, end = 0, 0
 # matrix1 = np.loadtxt(MATFILE1)
 # matrix2 = np.loadtxt(MATFILE2)
 
-DIMENSION = 200
+DIMENSION = 500
 matrix1 = np.ones((DIMENSION, DIMENSION))
 matrix2 = np.ones((DIMENSION, DIMENSION))
 matshape = matrix1.shape
@@ -40,6 +37,7 @@ task_log = {}
 
 # Product lock
 prod_lock = Lock()
+log_lock = Lock()
 
 
 # Machine number
@@ -72,6 +70,7 @@ replica_lock = Lock()
 
 # defined global variable of whether replica is primary or backup
 is_Primary = False
+from_elec = False
 
 # lock for the message queue
 dict_lock = Lock()
@@ -338,19 +337,29 @@ def backup_message_handling():
             # if after connecting, backup is lowest running, elected as primary
             if is_Lowest == True:
                 is_Primary = True
+                global from_elec
+                from_elec = True
             print("election done")
             print(is_Primary)
 
             # TO DO: Reconstruction after leader fails
 
 
-def catchup():
-    for conn in replica_connections():
+def catchup(conn):
+    try:
         size = conn.recv(4)
-        log_size = msg[0:4]
-        bytes_log = msg[4:int(size)]
-        task_log = pickle.loads(bytes_log)
-    print("caught up")
+        bytes_log = conn.recv(int.from_bytes(size, "big"))
+        if bytes_log is not None:
+            rec_log = pickle.loads(bytes_log)
+            log_lock.acquire()
+            for key in rec_log.keys():
+                task_log[key] = rec_log[key]
+            print('new task log', task_log)
+            log_lock.release()
+            print("caught up with", conn)
+
+    except Exception as e:
+        print('ERROR with', conn, e)
 
 # thread handling server interactions; all servers interact at backupserver addresses
 
@@ -382,7 +391,9 @@ def server_interactions():
             # primary behavior
             # still receives a connection, and gets an index of the connector
             conn_type = conn.recv(1)
-            catchup()
+            if from_elec == True:
+                catchup(conn)
+            # catchup()
             index_of_connector = conn_type[0]
             key = str(index_of_connector)
             # if other replica is connecting:
@@ -402,7 +413,7 @@ def server_interactions():
 
                 ready_conns = [key for key in availability.keys()
                                if availability[key] == 1]
-                if len(ready_conns) == NUM_MACHINES-1:
+                if len(ready_conns) == NUM_MACHINES-1 or from_elec:
                     # if all nodes connected, then the primary can start sending tasks
                     global start
                     start = time.time()
@@ -451,9 +462,8 @@ def task_scheduler(conn, addr, key):
                 result = np.frombuffer(data, dtype=np.float64).reshape(
                     (int(DIMENSION), int(DIMENSION)))
                 prod_lock.acquire()
-                product+=result
+                product += result
                 prod_lock.release()
-                
 
                 completed.append(subtask)
 
@@ -498,7 +508,7 @@ def send_task(subtask, conn, addr):
     column_bmsg = column.tobytes()
     row_bmsg = row.tobytes()
 
-    #maybe change becau
+    # maybe change becau
     # header1 = len(column_bmsg).to_bytes(4, "big")
     # header2 = len(row_bmsg).to_bytes(4, "big")
     meta = tag+dim
@@ -597,3 +607,6 @@ thread_list = []
 #             conn.sendall(bytesread)
 #     except:
 #         print('file error')
+
+# ec2-3-129-92-204.us-east-2.compute.amazonaws.com
+# scp -i /Users/michaelh40/Code/dot.opt/dot.pem /Users/michaelh40/Code/dot.opt/outer_product.py ec2-user@ec2-3-129-92-204.us-east-2.compute.amazonaws.com:~/.
